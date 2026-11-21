@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1c24">
+<title>Che vetta è?</title>
+<style>
+:root{--ink:#13242e;--night:#0d1c24;--accent:#d6127e;--paper:#fbfbf2;--safe-t:env(safe-area-inset-top,0px);--safe-b:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--night);color:#fff;font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+#cam,#ov{position:fixed;inset:0;width:100%;height:100%}
+#cam{object-fit:cover;background:linear-gradient(#24465a,#6f8f9c 55%,#3a4a3c 56%,#1c2a20)}
+#ov{touch-action:none}
+#cross{position:fixed;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border:2px solid rgba(255,255,255,.75);border-radius:50%;pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.3)}
+#cross::after{content:"";position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:#fff}
+#top{position:fixed;left:0;right:0;top:0;padding:calc(var(--safe-t) + 44px) 12px 8px;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+.chip{background:rgba(13,28,36,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border-radius:999px;padding:4px 10px;font-size:13px;white-space:nowrap}
+.chip.warn{background:rgba(214,18,126,.85)}
+#gear{position:fixed;right:12px;bottom:calc(var(--safe-b) + 14px);width:48px;height:48px;border-radius:50%;border:0;background:rgba(13,28,36,.8);color:#fff;font-size:22px}
+#card{position:fixed;left:12px;right:72px;bottom:calc(var(--safe-b) + 12px);background:var(--paper);color:var(--ink);border-radius:16px;padding:12px 16px;box-shadow:0 8px 30px rgba(0,0,0,.35);transform:translateY(140%);transition:transform .25s}
+#card.on{transform:none}
+#card small{display:block;color:#5b6b73;font-size:13px}
+#card b{display:block;font-size:22px;line-height:1.15}
+#card a{color:var(--accent);font-size:14px}
+.sheet{position:fixed;inset:0;display:grid;place-items:center;padding:24px;background:rgba(13,28,36,.94);z-index:5}
+.sheet[hidden]{display:none}
+.box{max-width:420px;width:100%}
+.box h1{font-size:34px;line-height:1.05;margin-bottom:10px}
+.box p{color:#c7d4da;margin-bottom:14px}
+.btn{display:block;width:100%;min-height:48px;margin-top:10px;border:0;border-radius:12px;font:600 17px system-ui,sans-serif;background:var(--accent);color:#fff}
+.btn.ghost{background:transparent;border:1px solid #6d8590}
+label{display:block;margin-top:16px;font-size:15px}
+label span{float:right;color:#c7d4da}
+input[type=range],select,input[type=number]{width:100%;margin-top:6px;font-size:16px}
+select,input[type=number]{min-height:44px;border-radius:10px;border:0;padding:0 10px}
+.foot{position:fixed;left:8px;top:calc(var(--safe-t) + 6px);font-size:11px;color:rgba(255,255,255,.7);pointer-events:none}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="ov"></canvas>
+<div id="cross"></div>
+<div class="foot">Vette © OpenStreetMap contributors</div>
+<div id="top"></div>
+<div id="card"></div>
+<button id="gear" aria-label="Impostazioni">⚙︎</button>
+
+<div class="sheet" id="start">
+  <div class="box">
+    <h1>Che vetta è?</h1>
+    <p>Inquadra le montagne: l'app usa GPS e bussola del telefono per mettere un nome su ogni cima. Il mirino al centro ti dice quale stai guardando.</p>
+    <p>Tieni il telefono dritto, davanti a te. Se i nomi sono spostati, muovi il telefono a "8" per calibrare la bussola o usa la correzione nelle impostazioni.</p>
+    <button class="btn" id="go">Avvia fotocamera</button>
+    <button class="btn ghost" id="demo">Prova la demo (Courmayeur)</button>
+  </div>
+</div>
+
+<div class="sheet" id="panel" hidden>
+  <div class="box">
+    <h1>Impostazioni</h1>
+    <label>Raggio di ricerca
+      <select id="radius"><option value="20">20 km</option><option value="50">50 km</option><option value="100">100 km</option></select></label>
+    <label>Campo visivo fotocamera <span id="fovv"></span>
+      <input type="range" id="fov" min="30" max="80" step="1"></label>
+    <label>Correzione bussola <span id="offv"></span>
+      <input type="range" id="off" min="-40" max="40" step="1"></label>
+    <label>Tua quota (vuoto = automatica)
+      <input type="number" id="alt" inputmode="numeric" placeholder="automatica"></label>
+    <button class="btn" id="close">Fatto</button>
+  </div>
+</div>
+
+<script>
+{
+const $=s=>document.querySelector(s);
+const cam=$('#cam'),cv=$('#ov'),ctx=cv.getContext('2d');
+const D2R=Math.PI/180,RE=6371000,K=0.13;
+const EPS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+const load=()=>{try{return JSON.parse(localStorage.getItem('vetta-set'))||{}}catch(e){return{}}};
+const S=Object.assign({radius:50,fov:50,offset:0,alt:''},load());
+const save=()=>{try{localStorage.setItem('vetta-set',JSON.stringify(S))}catch(e){}};
+const st={lat:null,lon:null,gpsAlt:null,demAlt:null,acc:null,heading:null,pitch:0,sx:0,sy:1,peaks:[],vis:[],demo:false,
+  relCompass:false,fetchAt:null,demAt:null,loading:false,err:'',target:null,oriSeen:false};
+
+const hav=(a,b,c,d)=>{const p1=a*D2R,p2=c*D2R,dp=(c-a)*D2R,dl=(d-b)*D2R;
+  const h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 2*RE*Math.asin(Math.sqrt(h))};
+const brg=(a,b,c,d)=>{const p1=a*D2R,p2=c*D2R,dl=(d-b)*D2R;
+  return (Math.atan2(Math.sin(dl)*Math.cos(p2),Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl))/D2R+360)%360};
+const n180=a=>((a%360)+540)%360-180;
+const userAlt=()=>S.alt!==''&&!isNaN(+S.alt)?+S.alt:(st.demAlt??st.gpsAlt??0);
+const dirName=b=>['N','NE','E','SE','S','SO','O','NO'][Math.round(b/45)%8];
+
+/* ---------- orientamento ---------- */
+function onOri(e){
+  if(e.alpha==null&&e.webkitCompassHeading==null)return;
+  st.oriSeen=true;
+  const a=(e.alpha||0)*D2R,b=(e.beta||0)*D2R,g=(e.gamma||0)*D2R;
+  const ca=Math.cos(a),sa=Math.sin(a),cb=Math.cos(b),sb=Math.sin(b),cg=Math.cos(g),sg=Math.sin(g);
+  // direzione della fotocamera posteriore (asse -z del telefono) in coordinate Est-Nord-Su
+  const x=-ca*sg-sa*sb*cg,y=-sa*sg+ca*sb*cg,z=-cb*cg;
+  let h=Math.atan2(x,y)/D2R;
+  if(e.webkitCompassHeading!=null)h=e.webkitCompassHeading;
+  else st.relCompass=!(e.absolute||e.type==='deviceorientationabsolute');
+  const p=Math.asin(Math.max(-1,Math.min(1,z)))/D2R;
+  // filtro passa-basso circolare per una bussola stabile
+  const k=.18;st.sx=st.sx*(1-k)+Math.sin(h*D2R)*k;st.sy=st.sy*(1-k)+Math.cos(h*D2R)*k;
+  st.heading=(Math.atan2(st.sx,st.sy)/D2R+360)%360;
+  st.pitch=st.pitch*(1-k)+p*k;
+}
+
+/* ---------- posizione ---------- */
+function setPos(lat,lon,alt,acc){
+  st.lat=lat;st.lon=lon;st.gpsAlt=alt;st.acc=acc;
+  if(!st.demAt||hav(lat,lon,st.demAt[0],st.demAt[1])>300)fetchDem();
+  if(!st.fetchAt||hav(lat,lon,st.fetchAt[0],st.fetchAt[1])>2000||st.fetchAt[2]!==S.radius)fetchPeaks();
+  else computeVis();
+  status();
+}
+async function fetchDem(){
+  st.demAt=[st.lat,st.lon];
+  try{const r=await fetch(`https://api.open-meteo.com/v1/elevation?latitude=${st.lat.toFixed(5)}&longitude=${st.lon.toFixed(5)}`);
+    const j=await r.json();if(j.elevation&&j.elevation[0]!=null){st.demAlt=j.elevation[0];computeVis();status()}}catch(e){}
+}
+const parseEle=v=>{if(v==null)return null;const n=parseFloat(String(v).replace(',','.'));return isFinite(n)?n:null};
+async function fetchPeaks(){
+  if(st.loading)return;st.loading=true;st.err='';status();
+  const lat=st.lat,lon=st.lon,rad=S.radius;
+  const key=`vetta-${lat.toFixed(2)},${lon.toFixed(2)},${rad}`;
+  let els=null;
+  try{const c=JSON.parse(localStorage.getItem(key));if(c&&Date.now()-c.t<7*864e5)els=c.e}catch(e){}
+  if(!els){
+    const q=`[out:json][timeout:30];node["natural"~"^(peak|volcano)$"]["name"](around:${rad*1000},${lat.toFixed(4)},${lon.toFixed(4)});out body;`;
+    for(const ep of EPS){
+      try{const r=await fetch(ep,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(q)});
+        if(!r.ok)throw new Error(r.status);
+        const j=await r.json();
+        els=j.elements.map(n=>({id:n.id,name:n.tags['name:it']||n.tags.name,ele:parseEle(n.tags.ele),lat:n.lat,lon:n.lon,wiki:n.tags.wikipedia||''})).filter(p=>p.ele!=null);
+        break;
+      }catch(e){}
+    }
+    if(els){try{localStorage.setItem(key,JSON.stringify({t:Date.now(),e:els}))}catch(e){}}
+  }
+  st.loading=false;
+  if(!els){st.err='Impossibile scaricare le vette: riprovo tra poco';status();setTimeout(()=>{st.fetchAt=null;st.lat!=null&&fetchPeaks()},15000);return}
+  st.peaks=els;st.fetchAt=[lat,lon,rad];computeVis();status();
+}
+
+/* ---------- visibilità ---------- */
+function computeVis(){
+  if(st.lat==null)return;
+  const ua=userAlt()+1.6;
+  const ps=st.peaks.map(p=>{const d=Math.max(hav(st.lat,st.lon,p.lat,p.lon),30);
+    const drop=d*d/(2*RE)*(1-K);
+    return Object.assign({},p,{d,b:brg(st.lat,st.lon,p.lat,p.lon),el:Math.atan2(p.ele-drop-ua,d)/D2R})}).sort((a,b)=>a.d-b.d);
+  // euristica: ogni cima più vicina è un cono con pendenza ~40%; nasconde le cime dietro di lei più basse in angolo
+  const vis=[];
+  for(const p of ps){
+    let hidden=false;
+    for(const q of vis){
+      if(q.d>p.d*.92)break;
+      const db=Math.abs(n180(p.b-q.b));if(db>35)continue;
+      const lat=q.d*Math.tan(db*D2R),h=q.ele-.4*lat;
+      if(h<=ua)continue;
+      const drop=q.d*q.d/(2*RE)*(1-K);
+      if(Math.atan2(h-drop-ua,q.d)/D2R>p.el+.08){hidden=true;break}
+    }
+    if(!hidden)vis.push(p);
+  }
+  // le cime nascoste non servono come ostacolo, ma ricontrolliamo anche contro quelle nascoste vicine: già coperte dal cono
+  st.vis=vis;
+}
+
+/* ---------- disegno ---------- */
+let W=0,H=0,DPR=1;
+function resize(){DPR=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',resize);resize();
+
+function pill(x,y,t1,t2,hot){
+  ctx.font='600 15px system-ui,sans-serif';const w1=ctx.measureText(t1).width;
+  ctx.font='12px system-ui,sans-serif';const w2=ctx.measureText(t2).width;
+  const w=Math.max(w1,w2)+20,h=40,l=Math.max(4,Math.min(W-w-4,x-w/2));
+  ctx.fillStyle=hot?'#d6127e':'rgba(251,251,242,.93)';
+  ctx.beginPath();ctx.roundRect?ctx.roundRect(l,y-h,w,h,10):ctx.rect(l,y-h,w,h);ctx.fill();
+  ctx.fillStyle=hot?'#fff':'#13242e';ctx.font='600 15px system-ui,sans-serif';ctx.fillText(t1,l+10,y-22);
+  ctx.fillStyle=hot?'#ffe3f1':'#5b6b73';ctx.font='12px system-ui,sans-serif';ctx.fillText(t2,l+10,y-8);
+  return [l,y-h,w,h];
+}
+function ribbon(hd,f){
+  const y=8+(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-t'))||0);
+  ctx.fillStyle='rgba(13,28,36,.55)';ctx.fillRect(0,y+14,W,22);
+  ctx.textAlign='center';ctx.font='600 12px system-ui,sans-serif';
+  for(let a=0;a<360;a+=5){const db=n180(a-hd);if(Math.abs(db)>80)continue;
+    const x=W/2+f*Math.tan(db*D2R);if(x<0||x>W)continue;
+    ctx.fillStyle='rgba(255,255,255,.8)';ctx.fillRect(x,y+30,1,a%15?4:7);
+    if(a%45===0){ctx.fillStyle=a===0?'#ff5fae':'#fff';ctx.fillText(dirName(a),x,y+28)}}
+  ctx.fillStyle='#fff';ctx.fillText(Math.round(hd)+'°',W/2,y+48);ctx.textAlign='start';
+}
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(st.heading!=null&&st.lat!=null){
+    const hd=(st.heading+S.offset+360)%360,f=(Math.min(W,H)/2)/Math.tan(S.fov*D2R/2);
+    ribbon(hd,f);
+    const cand=[];
+    for(const p of st.vis){const db=n180(p.b-hd);if(Math.abs(db)>75)continue;
+      const x=W/2+f*Math.tan(db*D2R);if(x<-40||x>W+40)continue;
+      const y=H/2-f*Math.tan((p.el-st.pitch)*D2R);if(y<-200||y>H+60)continue;
+      cand.push({p,x,y,db})}
+    // bersaglio: cima più vicina al mirino
+    let tgt=null,best=1e9;
+    for(const c of cand){const dd=Math.hypot(c.x-W/2,(c.y-H/2)*.5);if(dd<Math.min(W,H)*.14&&dd<best){best=dd;tgt=c.p}}
+    setTarget(tgt);
+    // etichette senza sovrapposizioni: prima le più alte
+    cand.sort((a,b)=>(b.p===tgt)-(a.p===tgt)||b.p.ele-a.p.ele);
+    const boxes=[];let n=0;
+    for(const c of cand){
+      const hot=c.p===tgt;
+      ctx.fillStyle=hot?'#d6127e':'#fff';ctx.beginPath();ctx.arc(c.x,c.y,hot?5:3.5,0,7);ctx.fill();
+      if(n>=24&&!hot)continue;
+      let ly=c.y-26,placed=null;
+      for(let lv=0;lv<7&&!placed;lv++,ly-=46){
+        if(ly<110)break;
+        ctx.font='600 15px system-ui,sans-serif';const w=ctx.measureText(c.p.name).width+20;
+        const l=Math.max(4,Math.min(W-w-4,c.x-w/2)),r=[l,ly-40,w,40];
+        if(!boxes.some(b=>r[0]<b[0]+b[2]+4&&b[0]<r[0]+r[2]+4&&r[1]<b[1]+b[3]+4&&b[1]<r[1]+r[3]+4))placed=ly;
+      }
+      if(placed==null)continue;
+      ctx.strokeStyle=hot?'#d6127e':'rgba(255,255,255,.8)';ctx.lineWidth=1.2;
+      ctx.beginPath();ctx.moveTo(c.x,c.y-4);ctx.lineTo(c.x,placed);ctx.stroke();
+      boxes.push(pill(c.x,placed,c.p.name,`${Math.round(c.p.ele)} m · ${(c.p.d/1000).toFixed(c.p.d<1e4?1:0)} km`,hot));n++;
+    }
+  }
+  requestAnimationFrame(draw);
+}
+
+function setTarget(p){
+  const card=$('#card');
+  if(p===st.target)return;st.target=p;
+  if(!p){card.classList.remove('on');return}
+  const wl=p.wiki&&p.wiki.includes(':')?`https://${p.wiki.split(':')[0]}.wikipedia.org/wiki/${encodeURIComponent(p.wiki.split(':').slice(1).join(':'))}`:'';
+  card.innerHTML=`<small>Stai guardando</small><b>${esc(p.name)}</b><small>${Math.round(p.ele)} m · ${(p.d/1000).toFixed(1)} km · direzione ${dirName(p.b)} (${Math.round(p.b)}°)</small>
+    <a href="https://www.openstreetmap.org/node/${p.id}" target="_blank" rel="noopener">Mappa</a>${wl?` · <a href="${wl}" target="_blank" rel="noopener">Wikipedia</a>`:''}`;
+  card.classList.add('on');
+  if(navigator.vibrate)try{navigator.vibrate(15)}catch(e){}
+}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function status(){
+  const c=[];
+  if(st.lat==null)c.push(['Cerco il GPS…',1]);
+  else{c.push([st.demo?'Demo: Courmayeur':`GPS ±${Math.round(st.acc||0)} m`]);c.push([`Quota ${Math.round(userAlt())} m`])}
+  if(st.loading)c.push(['Scarico le vette…']);
+  else if(st.peaks.length)c.push([`${st.vis.length} vette visibili su ${st.peaks.length}`]);
+  if(!st.demo&&!st.oriSeen)c.push(['Bussola non disponibile',1]);
+  if(st.relCompass)c.push(['Bussola non assoluta: usa la correzione',1]);
+  if(st.err)c.push([st.err,1]);
+  $('#top').innerHTML=c.map(([t,w])=>`<span class="chip${w?' warn':''}">${esc(t)}</span>`).join('');
+}
+
+/* ---------- avvio ---------- */
+async function start(demo){
+  st.demo=demo;$('#start').hidden=true;
+  if(demo){
+    st.heading=300;st.pitch=8;setPos(45.7969,6.9690,1224,5);
+    let drag=null;
+    cv.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];cv.setPointerCapture(e.pointerId)});
+    cv.addEventListener('pointermove',e=>{if(!drag)return;const k=S.fov/Math.min(W,H);
+      st.heading=(st.heading-(e.clientX-drag[0])*k+360)%360;st.pitch=Math.max(-30,Math.min(45,st.pitch+(e.clientY-drag[1])*k));drag=[e.clientX,e.clientY]});
+    cv.addEventListener('pointerup',()=>drag=null);
+  }else{
+    try{if(window.DeviceOrientationEvent&&typeof DeviceOrientationEvent.requestPermission==='function'){
+      const r=await DeviceOrientationEvent.requestPermission();if(r!=='granted')st.err='Permesso bussola negato'}}catch(e){}
+    if('ondeviceorientationabsolute' in window)addEventListener('deviceorientationabsolute',onOri);
+    else addEventListener('deviceorientation',onOri);
+    if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)
+      navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}})
+        .then(s=>{cam.srcObject=s}).catch(()=>{st.err='Fotocamera non disponibile';status()});
+    else st.err='Serve HTTPS per la fotocamera';
+    if(navigator.geolocation)navigator.geolocation.watchPosition(
+      p=>setPos(p.coords.latitude,p.coords.longitude,p.coords.altitude,p.coords.accuracy),
+      e=>{st.err=e.code===1?'Permesso posizione negato':'GPS non disponibile';status()},
+      {enableHighAccuracy:true,maximumAge:5000,timeout:30000});
+    setTimeout(status,3000);
+  }
+  status();
+}
+$('#go').onclick=()=>start(false);
+$('#demo').onclick=()=>start(true);
+
+/* ---------- impostazioni ---------- */
+const sync=()=>{$('#radius').value=S.radius;$('#fov').value=S.fov;$('#off').value=S.offset;$('#alt').value=S.alt;
+  $('#fovv').textContent=S.fov+'°';$('#offv').textContent=(S.offset>0?'+':'')+S.offset+'°'};
+$('#gear').onclick=()=>{sync();$('#panel').hidden=false};
+$('#close').onclick=()=>{$('#panel').hidden=true};
+$('#fov').oninput=e=>{S.fov=+e.target.value;sync();save()};
+$('#off').oninput=e=>{S.offset=+e.target.value;sync();save()};
+$('#alt').oninput=e=>{S.alt=e.target.value.trim();save();computeVis();status()};
+$('#radius').onchange=e=>{S.radius=+e.target.value;save();if(st.lat!=null)fetchPeaks()};
+sync();status();requestAnimationFrame(draw);
+}
+</script>
+</body>
+</html>
